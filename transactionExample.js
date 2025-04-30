@@ -10,7 +10,7 @@ async function doTransaction() {
     const studentId = 'S10810001';
     const newDeptId = 'EE001';
 
-    // 先確認學生是否存在（不輸出查詢結果）
+    // 確認學生是否存在
     const checkRows = await conn.query(
       'SELECT Student_ID FROM STUDENT WHERE Student_ID = ?',
       [studentId]
@@ -40,7 +40,7 @@ async function doTransaction() {
 
     console.log('查詢結果：', updatedRows);
 
-    // 額外印出學生目前的系別
+    // 印出學生目前的系別
     console.log(`學生 ${studentId} 目前的系別為：${updatedRows[0].Department_ID}`);
 
   } catch (err) {
