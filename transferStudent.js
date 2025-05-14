@@ -1,79 +1,72 @@
-// transferStudent.js
-const pool = require('./db');
+const { Student, Course, Enrollment, sequelize } = require('./models');
 
 async function transferStudent(studentId, oldDeptId, newDeptId) {
-  let conn;
+  const transaction = await sequelize.transaction();
+  const currentSemester = '112-2'; // 假設固定學期
+
   try {
-    conn = await pool.getConnection();
-    await conn.beginTransaction();
-
-    // 檢查學生是否存在
-    const studentRows = await conn.query(
-      'SELECT * FROM STUDENT WHERE Student_ID = ?',
-      [studentId]
-    );
-
-    if (studentRows.length === 0) {
+    // 1. 確認學生存在
+    const student = await Student.findByPk(studentId, { transaction });
+    if (!student) {
       console.error(`錯誤：學號 ${studentId} 不存在`);
-      await conn.rollback();
+      await transaction.rollback();
       return;
     }
 
-    // 1. 更新學生所屬系所
-    await conn.query(
-      'UPDATE STUDENT SET Department_ID = ? WHERE Student_ID = ?',
-      [newDeptId, studentId]
+    // 2. 更新學生系所
+    student.Department_ID = newDeptId;
+    await student.save({ transaction });
+
+    // 3. 更新舊系所必修課為「轉系退選」
+    const oldRequiredCourses = await Course.findAll({
+      where: {
+        Department_ID: oldDeptId,
+        Is_Required: true
+      },
+      attributes: ['Course_ID'],
+      transaction
+    });
+
+    const oldCourseIds = oldRequiredCourses.map(c => c.Course_ID);
+
+    await Enrollment.update(
+      { Status: '轉系退選' },
+      {
+        where: {
+          Student_ID: studentId,
+          Course_ID: oldCourseIds
+        },
+        transaction
+      }
     );
 
-    // 2. 標記舊系所必修課程為「轉系退選」
-    await conn.query(`
-      UPDATE ENROLLMENT 
-      SET Status = '轉系退選' 
-      WHERE Student_ID = ? 
-        AND Course_ID IN (
-          SELECT Course_ID FROM COURSE 
-          WHERE Department_ID = ? AND Is_Required = 1
-        )
-    `, [studentId, oldDeptId]);
+    // 4. 取得新系所必修課
+    const newRequiredCourses = await Course.findAll({
+      where: {
+        Department_ID: newDeptId,
+        Is_Required: true
+      },
+      attributes: ['Course_ID'],
+      transaction
+    });
 
-    // 3. 加選新系所必修課程
-    const requiredCourses = await conn.query(`
-  SELECT Course_ID 
-  FROM COURSE 
-  WHERE Department_ID = ? AND Is_Required = 1
-`, [newDeptId]);
+    // 5. 為新必修課新增 ENROLLMENT 紀錄
+    const enrollmentData = newRequiredCourses.map(course => ({
+      Student_ID: studentId,
+      Course_ID: course.Course_ID,
+      Semester: currentSemester,
+      Status: '轉系加選'
+    }));
 
-    // 確保是陣列
-    if (!Array.isArray(requiredCourses)) {
-      throw new Error('查詢新系所必修課程失敗，回傳結果不是陣列');
-    }
+    await Enrollment.bulkCreate(enrollmentData, { transaction });
 
-    for (const course of requiredCourses) {
-      await conn.query(`
-    INSERT INTO ENROLLMENT (Student_ID, Course_ID, Semester, Status)
-    VALUES (?, ?, ?, '轉系加選')
-  `, [studentId, course.Course_ID, currentSemester]);
-    }
-
-    // 假設有個當前學期的 ID
-    const currentSemester = '112-2';
-
-    for (const course of requiredCourses) {
-      await conn.query(`
-        INSERT INTO ENROLLMENT (Student_ID, Course_ID, Semester, Status)
-        VALUES (?, ?, ?, '轉系加選')
-      `, [studentId, course.Course_ID, currentSemester]);
-    }
-
-    await conn.commit();
+    await transaction.commit();
     console.log(`學生 ${studentId} 已從 ${oldDeptId} 轉到 ${newDeptId}`);
   } catch (err) {
-    if (conn) await conn.rollback();
+    await transaction.rollback();
     console.error('轉系處理失敗：', err);
-  } finally {
-    if (conn) conn.release();
   }
 }
 
 // 範例執行
-transferStudent('S10810005', 'EE001', 'CS001');
+transferStudent('S10811005', 'CS001', 'EE001');
